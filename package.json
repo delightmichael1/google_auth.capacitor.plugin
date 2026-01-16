@@ -1,6 +1,6 @@
 {
   "name": "@deldev/capacitor-google-auth",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A google auth capacitor plugin",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
