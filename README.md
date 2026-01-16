@@ -49,6 +49,11 @@ signIn() => Promise<User>
 
 Initiates the sign-in process and returns a Promise that resolves with the user information.
 
+When `grantOfflineAccess` is true, the `serverAuthCode` will be populated.
+You should send this code to your backend to exchange for tokens.
+
+When `grantOfflineAccess` is false, you'll receive an `accessToken` directly.
+
 **Returns:** <code>Promise&lt;<a href="#user">User</a>&gt;</code>
 
 --------------------
@@ -90,20 +95,21 @@ Signs out the user and returns a Promise.
 | **`clientId`**           | <code>string</code>   | The app's client ID, found and created in the Google Developers Console. Common for Android or iOS. The default is defined in the configuration. |                    | 3.1.0 |
 | **`scopes`**             | <code>string[]</code> | Specifies the scopes required for accessing Google APIs The default is defined in the configuration.                                             |                    |       |
 | **`grantOfflineAccess`** | <code>boolean</code>  | Set if your application needs to refresh access tokens when the user is not present at the browser. In response use `serverAuthCode` key         | <code>false</code> | 3.1.0 |
+| **`backendUrl`**         | <code>string</code>   | Backend URL for token exchange (optional) If provided, the plugin can help with backend communication                                            |                    |       |
 
 
 #### User
 
-| Prop                 | Type                                                      | Description                                                         |
-| -------------------- | --------------------------------------------------------- | ------------------------------------------------------------------- |
-| **`id`**             | <code>string</code>                                       | The unique identifier for the user.                                 |
-| **`email`**          | <code>string</code>                                       | The email address associated with the user.                         |
-| **`name`**           | <code>string</code>                                       | The user's full name.                                               |
-| **`familyName`**     | <code>string</code>                                       | The family name (last name) of the user.                            |
-| **`givenName`**      | <code>string</code>                                       | The given name (first name) of the user.                            |
-| **`imageUrl`**       | <code>string</code>                                       | The URL of the user's profile picture.                              |
-| **`serverAuthCode`** | <code>string</code>                                       | The server authentication code.                                     |
-| **`authentication`** | <code><a href="#authentication">Authentication</a></code> | The authentication details including access, refresh and ID tokens. |
+| Prop                 | Type                                                      | Description                                                                      |
+| -------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **`id`**             | <code>string</code>                                       | The unique identifier for the user.                                              |
+| **`email`**          | <code>string</code>                                       | The email address associated with the user.                                      |
+| **`name`**           | <code>string</code>                                       | The user's full name.                                                            |
+| **`familyName`**     | <code>string</code>                                       | The family name (last name) of the user.                                         |
+| **`givenName`**      | <code>string</code>                                       | The given name (first name) of the user.                                         |
+| **`imageUrl`**       | <code>string</code>                                       | The URL of the user's profile picture.                                           |
+| **`serverAuthCode`** | <code>string</code>                                       | The server authentication code. Use this to exchange for tokens on your backend. |
+| **`authentication`** | <code><a href="#authentication">Authentication</a></code> | The authentication details including access, refresh and ID tokens.              |
 
 
 #### Authentication

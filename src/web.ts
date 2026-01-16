@@ -1,39 +1,54 @@
 import { WebPlugin } from '@capacitor/core';
 import { GoogleAuthPlugin, InitOptions, User } from './definitions';
 
+// Declare Google Identity Services types
+declare global {
+  interface Window {
+    google: any;
+  }
+}
+
 export class GoogleAuthWeb extends WebPlugin implements GoogleAuthPlugin {
-  gapiLoaded: Promise<void>;
-  options: InitOptions;
+  private tokenClient: any;
+  private options: InitOptions & { backendUrl?: string };
+  private currentUser: User | null = null;
 
   constructor() {
     super();
   }
 
-  loadScript() {
-    if (typeof document === 'undefined') {
-      return;
-    }
+  loadScript(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (typeof document === 'undefined') {
+        reject(new Error('Document is not available'));
+        return;
+      }
 
-    const scriptId = 'gapi';
-    const scriptEl = document?.getElementById(scriptId);
+      const scriptId = 'google-identity-services';
+      const existingScript = document.getElementById(scriptId);
 
-    if (scriptEl) {
-      return;
-    }
+      if (existingScript) {
+        resolve();
+        return;
+      }
 
-    const head = document.getElementsByTagName('head')[0];
-    const script = document.createElement('script');
+      const head = document.getElementsByTagName('head')[0];
+      const script = document.createElement('script');
 
-    script.type = 'text/javascript';
-    script.defer = true;
-    script.async = true;
-    script.id = scriptId;
-    script.onload = this.platformJsLoaded.bind(this);
-    script.src = 'https://apis.google.com/js/platform.js';
-    head.appendChild(script);
+      script.type = 'text/javascript';
+      script.defer = true;
+      script.async = true;
+      script.id = scriptId;
+      script.src = 'https://accounts.google.com/gsi/client';
+
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('Failed to load Google Identity Services'));
+
+      head.appendChild(script);
+    });
   }
 
-  initialize(
+  async initialize(
     _options: Partial<InitOptions> = {
       clientId: '',
       scopes: [],
@@ -41,116 +56,225 @@ export class GoogleAuthWeb extends WebPlugin implements GoogleAuthPlugin {
     },
   ): Promise<void> {
     if (typeof window === 'undefined') {
-      return;
+      throw new Error('Window is not available');
     }
 
     const metaClientId = (document.getElementsByName('google-signin-client_id')[0] as any)?.content;
     const clientId = _options.clientId || metaClientId || '';
 
     if (!clientId) {
-      console.warn('GoogleAuthPlugin - clientId is empty');
+      throw new Error('GoogleAuthPlugin - clientId is required');
     }
 
     this.options = {
       clientId,
       grantOfflineAccess: _options.grantOfflineAccess ?? false,
-      scopes: _options.scopes || [],
+      scopes: _options.scopes || ['email', 'profile'],
+      backendUrl: (_options as any).backendUrl,
     };
 
-    this.gapiLoaded = new Promise((resolve) => {
-      // HACK: Relying on window object, can't get property in gapi.load callback
-      (window as any).gapiResolve = resolve;
-      this.loadScript();
-    });
-
-    this.addUserChangeListener();
-    return this.gapiLoaded;
+    await this.loadScript();
+    await this.initializeGoogleIdentityServices();
   }
 
-  platformJsLoaded() {
-    gapi.load('auth2', () => {
-      // https://github.com/Deldev/CapacitorGoogleAuth/issues/202#issuecomment-1147393785
-      const clientConfig: gapi.auth2.ClientConfig & { plugin_name: string } = {
-        client_id: this.options.clientId,
-        plugin_name: 'DeldevCapacitorGoogleAuth',
-      };
-
-      if (this.options.scopes.length) {
-        clientConfig.scope = this.options.scopes.join(' ');
+  private async initializeGoogleIdentityServices(): Promise<void> {
+    return new Promise((resolve) => {
+      if (window.google && window.google.accounts) {
+        resolve();
+        return;
       }
 
-      gapi.auth2.init(clientConfig);
-      (window as any).gapiResolve();
+      const checkGoogle = setInterval(() => {
+        if (window.google && window.google.accounts) {
+          clearInterval(checkGoogle);
+          resolve();
+        }
+      }, 100);
     });
   }
 
-  async signIn() {
+  async signIn(): Promise<User> {
     return new Promise<User>(async (resolve, reject) => {
       try {
-        let serverAuthCode: string;
+        if (!window.google || !window.google.accounts) {
+          throw new Error('Google Identity Services not loaded. Call initialize() first.');
+        }
+
         const needsOfflineAccess = this.options.grantOfflineAccess ?? false;
 
         if (needsOfflineAccess) {
-          const offlineAccessResponse = await gapi.auth2.getAuthInstance().grantOfflineAccess();
-          serverAuthCode = offlineAccessResponse.code;
+          // Use code client for offline access
+          this.tokenClient = window.google.accounts.oauth2.initCodeClient({
+            client_id: this.options.clientId,
+            scope: this.options.scopes.join(' '),
+            ux_mode: 'popup',
+            callback: async (response: any) => {
+              if (response.error) {
+                reject(new Error(response.error));
+                return;
+              }
+
+              try {
+                // Return serverAuthCode - let client decide what to do
+                const user: User = {
+                  id: '',
+                  email: '',
+                  name: '',
+                  givenName: '',
+                  familyName: '',
+                  imageUrl: '',
+                  serverAuthCode: response.code,
+                  authentication: {
+                    accessToken: '',
+                    idToken: '',
+                    refreshToken: '',
+                  },
+                };
+
+                this.currentUser = user;
+                this.notifyListeners('userChange', user);
+                resolve(user);
+              } catch (error) {
+                reject(error);
+              }
+            },
+          });
+
+          this.tokenClient.requestCode();
         } else {
-          await gapi.auth2.getAuthInstance().signIn();
+          // Use token client for access token only
+          this.tokenClient = window.google.accounts.oauth2.initTokenClient({
+            client_id: this.options.clientId,
+            scope: this.options.scopes.join(' '),
+            callback: async (response: any) => {
+              if (response.error) {
+                reject(new Error(response.error));
+                return;
+              }
+
+              try {
+                const userInfo = await this.getUserInfo(response.access_token);
+
+                const user: User = {
+                  id: userInfo.id,
+                  email: userInfo.email,
+                  name: userInfo.name,
+                  givenName: userInfo.givenName,
+                  familyName: userInfo.familyName,
+                  imageUrl: userInfo.imageUrl,
+                  serverAuthCode: '',
+                  authentication: {
+                    accessToken: response.access_token,
+                    idToken: '',
+                    refreshToken: '',
+                  },
+                };
+
+                this.currentUser = user;
+                this.notifyListeners('userChange', user);
+                resolve(user);
+              } catch (error) {
+                reject(error);
+              }
+            },
+          });
+
+          this.tokenClient.requestAccessToken();
         }
-
-        const googleUser = gapi.auth2.getAuthInstance().currentUser.get();
-
-        if (needsOfflineAccess) {
-          // HACK: AuthResponse is null if we don't do this when using grantOfflineAccess
-          await googleUser.reloadAuthResponse();
-        }
-
-        const user = this.getUserFrom(googleUser);
-        user.serverAuthCode = serverAuthCode;
-        resolve(user);
       } catch (error) {
         reject(error);
       }
     });
   }
 
-  async refresh() {
-    const authResponse = await gapi.auth2.getAuthInstance().currentUser.get().reloadAuthResponse();
+  private async getUserInfo(accessToken: string): Promise<User> {
+    const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to fetch user info');
+    }
+
+    const data = await response.json();
+
     return {
-      accessToken: authResponse.access_token,
-      idToken: authResponse.id_token,
-      refreshToken: '',
+      id: data.id || '',
+      email: data.email || '',
+      name: data.name || '',
+      givenName: data.given_name || '',
+      familyName: data.family_name || '',
+      imageUrl: data.picture || '',
+      serverAuthCode: '',
+      authentication: {
+        accessToken: '',
+        idToken: '',
+        refreshToken: '',
+      },
     };
   }
 
-  async signOut() {
-    return gapi.auth2.getAuthInstance().signOut();
-  }
+  async refresh(): Promise<any> {
+    if (!this.currentUser) {
+      throw new Error('No user is currently signed in');
+    }
 
-  private async addUserChangeListener() {
-    await this.gapiLoaded;
-    gapi.auth2.getAuthInstance().currentUser.listen((googleUser) => {
-      this.notifyListeners('userChange', googleUser.isSignedIn() ? this.getUserFrom(googleUser) : null);
+    // Request a new token
+    return new Promise((resolve, reject) => {
+      if (!window.google || !window.google.accounts) {
+        reject(new Error('Google Identity Services not loaded'));
+        return;
+      }
+
+      this.tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: this.options.clientId,
+        scope: this.options.scopes.join(' '),
+        callback: (response: any) => {
+          if (response.error) {
+            reject(new Error(response.error));
+            return;
+          }
+
+          const authentication = {
+            accessToken: response.access_token,
+            idToken: '',
+            refreshToken: '',
+          };
+
+          if (this.currentUser) {
+            this.currentUser.authentication = authentication;
+          }
+
+          resolve(authentication);
+        },
+      });
+
+      this.tokenClient.requestAccessToken({ prompt: '' });
     });
   }
 
-  private getUserFrom(googleUser: gapi.auth2.GoogleUser) {
-    const user = {} as User;
-    const profile = googleUser.getBasicProfile();
+  async signOut(): Promise<any> {
+    if (window.google && window.google.accounts && window.google.accounts.id) {
+      window.google.accounts.id.disableAutoSelect();
+    }
 
-    user.email = profile.getEmail();
-    user.familyName = profile.getFamilyName();
-    user.givenName = profile.getGivenName();
-    user.id = profile.getId();
-    user.imageUrl = profile.getImageUrl();
-    user.name = profile.getName();
+    if (this.currentUser && this.currentUser.authentication.accessToken) {
+      try {
+        await fetch(`https://oauth2.googleapis.com/revoke?token=${this.currentUser.authentication.accessToken}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+        });
+      } catch (error) {
+        console.error('Error revoking token:', error);
+      }
+    }
 
-    const authResponse = googleUser.getAuthResponse(true);
-    user.authentication = {
-      accessToken: authResponse.access_token,
-      idToken: authResponse.id_token,
-      refreshToken: '',
-    };
-
-    return user;
+    this.currentUser = null;
+    this.notifyListeners('userChange', null);
+    return Promise.resolve();
   }
 }

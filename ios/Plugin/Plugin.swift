@@ -2,115 +2,214 @@ import Foundation
 import Capacitor
 import GoogleSignIn
 
-/**
- * Please read the Capacitor iOS Plugin Development Guide
- * here: https://capacitor.ionicframework.com/docs/plugins/ios
- */
 @objc(GoogleAuth)
 public class GoogleAuth: CAPPlugin {
-    var signInCall: CAPPluginCall!
-    var googleSignIn: GIDSignIn!;
-    var googleSignInConfiguration: GIDConfiguration!;
-    var forceAuthCode: Bool = false;
-    var additionalScopes: [String]!;
+    var signInCall: CAPPluginCall?
+    var googleSignIn: GIDSignIn!
+    var googleSignInConfiguration: GIDConfiguration!
+    var forceAuthCode: Bool = false
+    var additionalScopes: [String] = []
 
-    func loadSignInClient (
+    func loadSignInClient(
         customClientId: String,
         customScopes: [String]
     ) {
-        googleSignIn = GIDSignIn.sharedInstance;
+        googleSignIn = GIDSignIn.sharedInstance
         
-        let serverClientId = getServerClientIdValue();
-
-        googleSignInConfiguration = GIDConfiguration.init(clientID: customClientId, serverClientID: serverClientId)
+        let serverClientId = getServerClientIdValue()
         
-        // these are scopes granted by default by the signIn method
-        let defaultGrantedScopes = ["email", "profile", "openid"];
-        // these are scopes we will need to request after sign in
-        additionalScopes = customScopes.filter {
-            return !defaultGrantedScopes.contains($0);
-        };
-
+        googleSignInConfiguration = GIDConfiguration(
+            clientID: customClientId,
+            serverClientID: serverClientId
+        )
+        
+        // These are scopes granted by default by the signIn method
+        let defaultGrantedScopes = ["email", "profile", "openid"]
+        
+        // Filter out default scopes to get additional scopes
+        additionalScopes = customScopes.filter { scope in
+            !defaultGrantedScopes.contains(scope.lowercased())
+        }
+        
+        // Get forceAuthCode from config
         forceAuthCode = getConfig().getBoolean("forceCodeForRefreshToken", false)
-
-        NotificationCenter.default.addObserver(self, selector: #selector(handleOpenUrl(_ :)), name: Notification.Name(Notification.Name.capacitorOpenURL.rawValue), object: nil);
+        
+        // Register for URL handling
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleOpenUrl(_:)),
+            name: Notification.Name(Notification.Name.capacitorOpenURL.rawValue),
+            object: nil
+        )
     }
 
-    
     public override func load() {
+        // Plugin loaded
     }
 
     @objc
     func initialize(_ call: CAPPluginCall) {
-        // get client id from initialize, with client id from config file as fallback
-        guard let clientId = call.getString("clientId") ?? getClientIdValue() as? String else {
-            NSLog("no client id found in config");
-            call.resolve();
-            return;
+        // Get client ID from initialize call or config file
+        guard let clientId = call.getString("clientId") ?? getClientIdValue() else {
+            call.reject("No client ID found. Please provide clientId in initialize() or config.")
+            return
         }
 
-        // get scopes from initialize, with scopes from config file as fallback
-        let customScopes = call.getArray("scopes", String.self) ?? (
-            getConfigValue("scopes") as? [String] ?? []
-        );
+        // Get scopes from initialize call or config file
+        let customScopes = call.getArray("scopes", String.self) ?? 
+            (getConfigValue("scopes") as? [String] ?? ["email", "profile"])
 
-        // get force auth code from initialize, with config from config file as fallback
-        forceAuthCode = call.getBool("grantOfflineAccess") ?? (
-            getConfigValue("forceCodeForRefreshToken") as? Bool ?? false
-        );
+        // Get force auth code from initialize call or config file
+        forceAuthCode = call.getBool("grantOfflineAccess") ?? 
+            (getConfigValue("forceCodeForRefreshToken") as? Bool ?? false)
         
-        // load client
-        self.loadSignInClient(
+        // Load the sign-in client
+        loadSignInClient(
             customClientId: clientId,
             customScopes: customScopes
         )
-        call.resolve();
+        
+        call.resolve()
     }
 
     @objc
     func signIn(_ call: CAPPluginCall) {
-        signInCall = call;
+        signInCall = call
+        
         DispatchQueue.main.async {
-            if self.googleSignIn.hasPreviousSignIn() && !self.forceAuthCode {
-                self.googleSignIn.restorePreviousSignIn() { user, error in
-                if let error = error {
-                    self.signInCall?.reject(error.localizedDescription);
-                    return;
-                }
-                self.resolveSignInCallWith(user: user!)
+            // Check if we should restore previous sign-in
+            let shouldRestorePrevious = self.googleSignIn.hasPreviousSignIn() && !self.forceAuthCode
+            
+            if shouldRestorePrevious {
+                self.googleSignIn.restorePreviousSignIn { [weak self] user, error in
+                    guard let self = self else { return }
+                    
+                    if let error = error {
+                        self.signInCall?.reject(
+                            error.localizedDescription,
+                            "\((error as NSError).code)",
+                            error
+                        )
+                        return
+                    }
+                    
+                    guard let user = user else {
+                        self.signInCall?.reject("Sign-in failed: No user returned")
+                        return
+                    }
+                    
+                    // Check if we need additional scopes
+                    if !self.additionalScopes.isEmpty {
+                        self.requestAdditionalScopes(for: user)
+                    } else {
+                        self.resolveSignInCall(with: user)
+                    }
                 }
             } else {
-                let presentingVc = self.bridge!.viewController!;
+                guard let presentingVc = self.bridge?.viewController else {
+                    call.reject("Unable to get view controller")
+                    return
+                }
                 
-                self.googleSignIn.signIn(with: self.googleSignInConfiguration, presenting: presentingVc, hint: nil, additionalScopes: self.additionalScopes) { user, error in
+                self.googleSignIn.signIn(
+                    with: self.googleSignInConfiguration,
+                    presenting: presentingVc,
+                    hint: nil,
+                    additionalScopes: self.additionalScopes
+                ) { [weak self] user, error in
+                    guard let self = self else { return }
+                    
                     if let error = error {
-                        self.signInCall?.reject(error.localizedDescription, "\(error._code)");
-                        return;
+                        let nsError = error as NSError
+                        
+                        // Check for user cancellation
+                        if nsError.code == -5 {
+                            self.signInCall?.reject(
+                                "The user canceled the sign-in flow.",
+                                "USER_CANCELLED",
+                                error
+                            )
+                        } else {
+                            self.signInCall?.reject(
+                                error.localizedDescription,
+                                "\(nsError.code)",
+                                error
+                            )
+                        }
+                        return
                     }
-                    self.resolveSignInCallWith(user: user!);
-                };
+                    
+                    guard let user = user else {
+                        self.signInCall?.reject("Sign-in failed: No user returned")
+                        return
+                    }
+                    
+                    self.resolveSignInCall(with: user)
+                }
             }
+        }
+    }
+    
+    private func requestAdditionalScopes(for user: GIDGoogleUser) {
+        guard let presentingVc = self.bridge?.viewController else {
+            signInCall?.reject("Unable to get view controller")
+            return
+        }
+        
+        self.googleSignIn.addScopes(
+            self.additionalScopes,
+            presenting: presentingVc
+        ) { [weak self] user, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                self.signInCall?.reject(
+                    error.localizedDescription,
+                    "\((error as NSError).code)",
+                    error
+                )
+                return
+            }
+            
+            guard let user = user else {
+                self.signInCall?.reject("Failed to add scopes: No user returned")
+                return
+            }
+            
+            self.resolveSignInCall(with: user)
         }
     }
 
     @objc
     func refresh(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
-            if self.googleSignIn.currentUser == nil {
-                call.reject("User not logged in.");
+            guard let currentUser = self.googleSignIn.currentUser else {
+                call.reject("User not logged in.")
                 return
             }
-            self.googleSignIn.currentUser!.authentication.do { (authentication, error) in
-                guard let authentication = authentication else {
-                    call.reject(error?.localizedDescription ?? "Something went wrong.");
-                    return;
+            
+            currentUser.authentication.do { authentication, error in
+                if let error = error {
+                    call.reject(
+                        error.localizedDescription,
+                        "\((error as NSError).code)",
+                        error
+                    )
+                    return
                 }
+                
+                guard let authentication = authentication else {
+                    call.reject("Failed to refresh: No authentication returned")
+                    return
+                }
+                
                 let authenticationData: [String: Any] = [
                     "accessToken": authentication.accessToken,
-                    "idToken": authentication.idToken ?? NSNull(),
-                    "refreshToken": authentication.refreshToken
+                    "idToken": authentication.idToken ?? "",
+                    "refreshToken": authentication.refreshToken ?? ""
                 ]
-                call.resolve(authenticationData);
+                
+                call.resolve(authenticationData)
             }
         }
     }
@@ -119,65 +218,66 @@ public class GoogleAuth: CAPPlugin {
     func signOut(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             if self.googleSignIn != nil {
-                self.googleSignIn.signOut();
+                self.googleSignIn.signOut()
             }
+            call.resolve()
         }
-        call.resolve();
     }
 
     @objc
     func handleOpenUrl(_ notification: Notification) {
-        guard let object = notification.object as? [String: Any] else {
-            print("There is no object on handleOpenUrl");
-            return;
+        guard let object = notification.object as? [String: Any],
+              let url = object["url"] as? URL else {
+            return
         }
-        guard let url = object["url"] as? URL else {
-            print("There is no url on handleOpenUrl");
-            return;
-        }
-        googleSignIn.handle(url);
+        
+        googleSignIn.handle(url)
     }
     
-    
     func getClientIdValue() -> String? {
+        // Priority: iosClientId > clientId > GoogleService-Info.plist
         if let clientId = getConfig().getString("iosClientId") {
-            return clientId;
+            return clientId
         }
-        else if let clientId = getConfig().getString("clientId") {
-            return clientId;
+        
+        if let clientId = getConfig().getString("clientId") {
+            return clientId
         }
-        else if let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
-                let dict = NSDictionary(contentsOfFile: path) as? [String: AnyObject],
-                let clientId = dict["CLIENT_ID"] as? String {
-            return clientId;
+        
+        if let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
+           let dict = NSDictionary(contentsOfFile: path) as? [String: AnyObject],
+           let clientId = dict["CLIENT_ID"] as? String {
+            return clientId
         }
-        return nil;
+        
+        return nil
     }
     
     func getServerClientIdValue() -> String? {
-        if let serverClientId = getConfig().getString("serverClientId") {
-            return serverClientId;
-        }
-        return nil;
+        return getConfig().getString("serverClientId")
     }
 
-    func resolveSignInCallWith(user: GIDGoogleUser) {
+    func resolveSignInCall(with user: GIDGoogleUser) {
         var userData: [String: Any] = [
             "authentication": [
                 "accessToken": user.authentication.accessToken,
-                "idToken": user.authentication.idToken,
-                "refreshToken": user.authentication.refreshToken
+                "idToken": user.authentication.idToken ?? "",
+                "refreshToken": user.authentication.refreshToken ?? ""
             ],
-            "serverAuthCode": user.serverAuthCode ?? NSNull(),
-            "email": user.profile?.email ?? NSNull(),
-            "familyName": user.profile?.familyName ?? NSNull(),
-            "givenName": user.profile?.givenName ?? NSNull(),
-            "id": user.userID ?? NSNull(),
-            "name": user.profile?.name ?? NSNull()
-        ];
+            "serverAuthCode": user.serverAuthCode ?? "",
+            "email": user.profile?.email ?? "",
+            "familyName": user.profile?.familyName ?? "",
+            "givenName": user.profile?.givenName ?? "",
+            "id": user.userID ?? "",
+            "name": user.profile?.name ?? ""
+        ]
+        
         if let imageUrl = user.profile?.imageURL(withDimension: 100)?.absoluteString {
-            userData["imageUrl"] = imageUrl;
+            userData["imageUrl"] = imageUrl
+        } else {
+            userData["imageUrl"] = ""
         }
-        signInCall?.resolve(userData);
+        
+        signInCall?.resolve(userData)
     }
 }

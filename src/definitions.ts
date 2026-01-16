@@ -3,8 +3,13 @@
 declare module '@capacitor/cli' {
   export interface PluginsConfig {
     GoogleAuth: GoogleAuthPluginOptions;
+    SocialAuth: SocialAuthPluginOptions;
   }
 }
+
+// ============================================================================
+// GOOGLE AUTH TYPES (Existing - unchanged)
+// ============================================================================
 
 export interface User {
   /**
@@ -39,6 +44,7 @@ export interface User {
 
   /**
    * The server authentication code.
+   * Use this to exchange for tokens on your backend.
    */
   serverAuthCode: string;
 
@@ -135,6 +141,13 @@ export interface InitOptions {
    * @since 3.1.0
    * */
   grantOfflineAccess?: boolean;
+
+  /**
+   * Backend URL for token exchange (optional)
+   * If provided, the plugin can help with backend communication
+   * @example "https://api.yourapp.com/auth"
+   */
+  backendUrl?: string;
 }
 
 export interface GoogleAuthPlugin {
@@ -147,6 +160,11 @@ export interface GoogleAuthPlugin {
 
   /**
    * Initiates the sign-in process and returns a Promise that resolves with the user information.
+   *
+   * When `grantOfflineAccess` is true, the `serverAuthCode` will be populated.
+   * You should send this code to your backend to exchange for tokens.
+   *
+   * When `grantOfflineAccess` is false, you'll receive an `accessToken` directly.
    */
   signIn(): Promise<User>;
 
@@ -159,4 +177,180 @@ export interface GoogleAuthPlugin {
    * Signs out the user and returns a Promise.
    */
   signOut(): Promise<any>;
+}
+
+// ============================================================================
+// FACEBOOK AUTH TYPES (New)
+// ============================================================================
+
+export interface FacebookUser {
+  /**
+   * The unique identifier for the user.
+   */
+  id: string;
+
+  /**
+   * The email address associated with the user.
+   */
+  email?: string;
+
+  /**
+   * The user's full name.
+   */
+  name?: string;
+
+  /**
+   * The family name (last name) of the user.
+   */
+  familyName?: string;
+
+  /**
+   * The given name (first name) of the user.
+   */
+  givenName?: string;
+
+  /**
+   * The URL of the user's profile picture.
+   */
+  imageUrl?: string;
+
+  /**
+   * The authentication details including access token.
+   * Note: When returned from signInWithFacebook, this contains the full token info.
+   * When returned from getFacebookProfile, this may be partially populated.
+   */
+  authentication?: FacebookAuthentication;
+}
+
+export interface FacebookAuthentication {
+  /**
+   * The access token string obtained during authentication.
+   */
+  token: string;
+
+  /**
+   * User ID associated with the token.
+   */
+  userId: string;
+
+  /**
+   * Token expiration date (ISO 8601 format).
+   */
+  expirationDate: string;
+
+  /**
+   * Permissions granted.
+   */
+  permissions: string[];
+
+  /**
+   * Permissions declined.
+   */
+  declinedPermissions: string[];
+}
+
+export interface FacebookInitOptions {
+  /**
+   * Facebook App ID
+   */
+  appId: string;
+}
+
+export interface FacebookLoginOptions {
+  /**
+   * Permissions to request
+   * @default ['public_profile', 'email']
+   */
+  permissions?: string[];
+}
+
+export interface FacebookLoginResponse {
+  /**
+   * Access token information
+   */
+  accessToken: FacebookAuthentication | null;
+
+  /**
+   * User profile information (if login successful)
+   */
+  user?: FacebookUser;
+}
+
+export interface FacebookProfileOptions {
+  /**
+   * Fields to request from the profile
+   * @default ['id', 'name', 'email', 'picture']
+   */
+  fields?: string[];
+}
+
+// ============================================================================
+// UNIFIED SOCIAL AUTH PLUGIN (New)
+// ============================================================================
+
+export interface SocialAuthPluginOptions {
+  /**
+   * Google OAuth configuration
+   */
+  google?: GoogleAuthPluginOptions;
+
+  /**
+   * Facebook OAuth configuration
+   */
+  facebook?: {
+    appId: string;
+  };
+}
+
+export interface SocialAuthPlugin {
+  // Google Auth Methods
+  /**
+   * Initializes Google authentication
+   * @param options - Google auth options
+   */
+  initializeGoogle(options?: InitOptions): Promise<void>;
+
+  /**
+   * Sign in with Google
+   */
+  signInWithGoogle(): Promise<User>;
+
+  /**
+   * Refresh Google authentication token
+   */
+  refreshGoogle(): Promise<Authentication>;
+
+  /**
+   * Sign out from Google
+   */
+  signOutGoogle(): Promise<void>;
+
+  // Facebook Auth Methods
+  /**
+   * Initializes Facebook authentication
+   * @param options - Facebook auth options
+   */
+  initializeFacebook(options: FacebookInitOptions): Promise<void>;
+
+  /**
+   * Sign in with Facebook
+   * @param options - Login options including permissions
+   */
+  signInWithFacebook(options?: FacebookLoginOptions): Promise<FacebookLoginResponse>;
+
+  /**
+   * Get Facebook user profile
+   * @param options - Profile options including fields to fetch
+   */
+  getFacebookProfile(options?: FacebookProfileOptions): Promise<FacebookUser>;
+
+  /**
+   * Get current Facebook access token
+   */
+  getFacebookAccessToken(): Promise<FacebookAuthentication | null>;
+
+  /**
+   * Sign out from Facebook
+   */
+  signOutFacebook(): Promise<void>;
 }
